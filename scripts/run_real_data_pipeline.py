@@ -7,6 +7,11 @@ from tqdm import tqdm
 from sklearn.metrics import log_loss
 from catboost import CatBoostClassifier, Pool
 from scipy.special import logsumexp
+import matplotlib.pyplot as plt
+import seaborn as sns
+import datetime
+from pathlib import Path
+from sklearn.calibration import calibration_curve
 
 # Add project root to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -112,7 +117,8 @@ def train_mnl(cfg, data_loader, item_dim):
 def run_pipeline(
     utility_model_type: str = 'linear',
     mnl_lr: float = None,
-    mnl_epochs: int = None
+    mnl_epochs: int = None,
+    return_preds: bool = False
 ):
     print(f"\n>>> Initializing Real Data Experiment [{utility_model_type.upper()}]...")
     cfg = RealExpConfig()
@@ -245,17 +251,140 @@ def run_pipeline(
     print(f" MRC Calib:     {nll_mrc:.5f}")
     print("-" * 40)
     
-    return {'model': utility_model_type, 'nll_mrc': nll_mrc, 'nll_lin': nll_lin}
+    result = {
+        'model': utility_model_type, 
+        'nll_mrc': nll_mrc, 
+        'nll_lin': nll_lin,
+        'nll_sim': nll_sim
+    }
+    # [NEW] Return predictions for plotting
+    if return_preds:
+        result.update({
+            'y_true': y_true,
+            'p_sim': sim_p_nobuy,
+            'p_lin': p_lin,
+            'p_mrc': p_mrc
+        })
+    
+    return result
+
+# ==========================================
+# 4. Visualization Functions
+# ==========================================
+def plot_real_data_results(res_lin, res_nn):
+    """
+    Generates NLL Comparison Bar Chart and Calibration Curves.
+    Args:
+        res_lin: Result dictionary from Linear Utility run (must contain preds)
+        res_nn: Result dictionary from Neural Utility run (must contain preds)
+    """
+    # Setup
+    sns.set_theme(style="whitegrid")
+    save_dir = Path("results/figures")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    print("\n>>> Generating Visualizations...")
+
+    # -------------------------------------------------------
+    # Plot 1: NLL Comparison Bar Chart
+    # -------------------------------------------------------
+    plt.figure(figsize=(10, 6))
+    
+    # Prepare Data
+    # We compare:
+    # 1. Simulator (Uncalibrated) - take from linear result (same for both)
+    # 2. Linear Calibration (Linear Utility) - The traditional baseline
+    # 3. MRC (Linear Utility) - Algo improvement
+    # 4. MRC (Neural Utility) - Model improvement (Best)
+    
+    methods = [
+        'Simulator\n(Baseline)', 
+        'Linear Calib\n(Linear Util)', 
+        'MRC\n(Linear Util)', 
+        'MRC\n(Neural Util)'
+    ]
+    
+    nlls = [
+        res_lin['nll_sim'], 
+        res_lin['nll_lin'], 
+        res_lin['nll_mrc'], 
+        res_nn['nll_mrc']
+    ]
+    
+    # Colors: Gray for baseline, Blue for Linear, Green for MRC-Lin, Red for MRC-Neural
+    colors = ['#95a5a6', '#3498db', '#2ecc71', '#e74c3c']
+    
+    ax = sns.barplot(x=methods, y=nlls, hue=methods,palette=colors,legend=False)
+    
+    # Decoration
+    plt.title('Negative Log Likelihood (NLL) on Real Data', fontsize=16, fontweight='bold')
+    plt.ylabel('NLL (Lower is Better)', fontsize=14)
+    plt.ylim(0, max(nlls) * 1.15) # Leave space for text
+    
+    # Add value labels on top of bars
+    for i, v in enumerate(nlls):
+        ax.text(i, v + 0.02, f"{v:.4f}", ha='center', va='bottom', fontweight='bold', fontsize=12)
+        
+    plt.tight_layout()
+    save_path_bar = save_dir / f"real_nll_comparison_{timestamp}.png"
+    plt.savefig(save_path_bar, dpi=300)
+    print(f"   Saved NLL Bar Chart to {save_path_bar}")
+    plt.close()
+
+    # -------------------------------------------------------
+    # Plot 2: Calibration Curve (Reliability Diagram)
+    # -------------------------------------------------------
+    plt.figure(figsize=(8, 8))
+    
+    # A. Perfect Calibration (Diagonal)
+    plt.plot([0, 1], [0, 1], "k:", label="Perfectly Calibrated", linewidth=2)
+    
+    # Helper to plot curve
+    def add_curve(y_true, y_prob, label, color, fmt='-o'):
+        # calibration_curve bins the data and calculates (mean_pred, fraction_true)
+        frac_of_positives, mean_predicted_value = calibration_curve(y_true, y_prob, n_bins=10)
+        plt.plot(mean_predicted_value, frac_of_positives, fmt, 
+                 color=color, label=label, linewidth=2, markersize=6)
+
+    # B. Simulator (Raw) - Usually miscalibrated
+    add_curve(res_nn['y_true'], res_nn['p_sim'], 
+              "Simulator (Uncalibrated)", "#95a5a6", '--^')
+    
+    # C. Linear Calibration (Linear Util) - The baseline method
+    add_curve(res_lin['y_true'], res_lin['p_lin'], 
+              "Linear Calib (Lin Util)", "#3498db", '-.s')
+    
+    # D. MRC (Neural Util) - Our Best Model
+    add_curve(res_nn['y_true'], res_nn['p_mrc'], 
+              "MRC (Neural Util)", "#e74c3c", '-o')
+    
+    # Decoration
+    plt.xlabel("Mean Predicted Probability", fontsize=14)
+    plt.ylabel("Fraction of Positives (Actual No-Purchase Rate)", fontsize=14)
+    plt.title("Calibration Curve (Reliability Diagram)", fontsize=16, fontweight='bold')
+    plt.legend(fontsize=12, loc="lower right")
+    plt.grid(True, alpha=0.4)
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    
+    plt.tight_layout()
+    save_path_curve = save_dir / f"real_calibration_curve_{timestamp}.png"
+    plt.savefig(save_path_curve, dpi=300)
+    print(f"   Saved Calibration Curve to {save_path_curve}")
+    plt.close()
 
 if __name__ == "__main__":
-    res_lin = run_pipeline(utility_model_type='linear')
-    res_nn = run_pipeline(utility_model_type='neural', mnl_lr=0.001, mnl_epochs=50)
+    res_lin = run_pipeline(utility_model_type='linear',return_preds=True)
+    res_nn = run_pipeline(utility_model_type='neural', mnl_lr=0.001, mnl_epochs=50,return_preds=True)
     
     print("\n" + "="*50)
     print(" FINAL COMPARISON: Linear vs Neural Utility ")
     print("="*50)
     print(f" Linear MNL -> MRC NLL: {res_lin['nll_mrc']:.5f}")
     print(f" Neural MNL -> MRC NLL: {res_nn['nll_mrc']:.5f}")
+    
+    plot_real_data_results(res_lin, res_nn)
     
     improvement = res_lin['nll_mrc'] - res_nn['nll_mrc']
     if improvement > 0:
