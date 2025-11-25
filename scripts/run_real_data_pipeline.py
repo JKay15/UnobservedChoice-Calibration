@@ -6,6 +6,7 @@ import pandas as pd
 from tqdm import tqdm
 from sklearn.metrics import log_loss
 from catboost import CatBoostClassifier, Pool
+from scipy.special import logsumexp
 
 # Add project root to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -15,127 +16,129 @@ from src.datasets.real_preprocessing import ExpediaPreprocessor
 from src.datasets.data_loader import ExpediaDataLoader
 from src.algorithms.solver import CalibrationSolver
 
-# ==========================================
-# 1. MNL Model Definition
-# ==========================================
-class ConditionalMNL(torch.nn.Module):
+# # ==========================================
+# # 1. MNL Model Definition
+# # ==========================================
+
+class LinearUtilityModel(torch.nn.Module):
+    """Classic MNL: u = beta * x"""
     def __init__(self, input_dim):
         super().__init__()
-        # Beta: Weights for item features (X) -> Utility
         self.beta = torch.nn.Linear(input_dim, 1, bias=False)
-        # Initialize close to zero for stability
         torch.nn.init.normal_(self.beta.weight, mean=0.0, std=0.01)
         
     def forward(self, x, mask):
-        """
-        x: (Batch, Max_Items, Feat_Dim)
-        mask: (Batch, Max_Items) - 1.0 for valid, 0.0 for padding
-        """
-        # u = X * beta
-        u = self.beta(x).squeeze(-1) # (B, L)
+        u = self.beta(x).squeeze(-1) 
+        u = u.masked_fill(mask == 0, -1e9)
+        return u
+    
+    def forward_flat(self, x):
+        return self.beta(x).squeeze(-1)
+
+class NeuralUtilityModel(torch.nn.Module):
+    """Neural MNL: u = MLP(x)"""
+    def __init__(self, input_dim, hidden_dim=64):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(input_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, 1)
+        )
+        # Init last layer near zero
+        torch.nn.init.normal_(self.net[2].weight, mean=0.0, std=0.01)
+        torch.nn.init.zeros_(self.net[2].bias)
         
-        # Masking: Set padded items to -inf so exp(u) becomes 0
-        # We use a large negative number safe for float32
+    def forward(self, x, mask):
+        u = self.net(x).squeeze(-1)
         u = u.masked_fill(mask == 0, -1e9)
         return u
 
+    def forward_flat(self, x):
+        return self.net(x).squeeze(-1)
 # ==========================================
-# 2. Training Helper
+# 2. Training Helper (Restored Visualization)
 # ==========================================
 def train_mnl(cfg, data_loader, item_dim):
-    """
-    Trains MNL on 'Booking' sessions to learn Internal Utilities (Beta).
-    Using M3 Pro MPS acceleration.
-    """
-    print("[Estimator] preparing data for MNL (Booking Sessions only)...")
+    print(f"[Estimator] Training MNL (Type: {cfg.utility_model_type})...")
     
-    # 1. Get Data (Full Batch Tensor)
-    # This uses your optimized Numpy Slicing
     batch = data_loader.get_pytorch_data(filter_booking_only=True)
-    
-    # Move to MPS (GPU)
     device = torch.device(cfg.device)
-    items = batch['items'].to(device)     # (N, L, D)
-    mask = batch['mask'].to(device)       # (N, L)
-    labels = batch['labels'].to(device)   # (N,)
+    items = batch['items'].to(device)
+    mask = batch['mask'].to(device)
+    labels = batch['labels'].to(device)
     
     N_samples = items.shape[0]
-    print(f"[Estimator] Training on {N_samples} sessions...")
+    print(f"   Training samples: {N_samples}")
     
-    # 2. Model & Optimizer
-    model = ConditionalMNL(item_dim).to(device)
+    if cfg.utility_model_type == 'linear':
+        model = LinearUtilityModel(item_dim).to(device)
+    elif cfg.utility_model_type == 'neural':
+        model = NeuralUtilityModel(item_dim, hidden_dim=64).to(device)
+    else:
+        raise ValueError(f"Unknown utility model type: {cfg.utility_model_type}")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.mnl_lr)
     
-    # 3. Mini-batch Loop
     bs = cfg.mnl_batch_size
     n_batches = (N_samples + bs - 1) // bs
     
     model.train()
     for epoch in range(cfg.mnl_epochs):
         total_loss = 0
-        
-        # Shuffle indices
         indices = torch.randperm(N_samples)
         
         for i in range(n_batches):
             idx = indices[i*bs : (i+1)*bs]
-            
-            x_batch = items[idx]
-            m_batch = mask[idx]
-            y_batch = labels[idx]
+            logits = model(items[idx], mask[idx])
+            loss = torch.nn.functional.cross_entropy(logits, labels[idx])
             
             optimizer.zero_grad()
-            
-            # Forward
-            logits = model(x_batch, m_batch)
-            
-            # Loss (Cross Entropy selects the booked item)
-            loss = torch.nn.functional.cross_entropy(logits, y_batch)
-            
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
             
+        # [RESTORED] Print every 5 epochs for better visibility
         if (epoch + 1) % 5 == 0:
             avg_loss = total_loss / n_batches
             print(f"   Epoch {epoch+1}/{cfg.mnl_epochs} | Loss: {avg_loss:.4f}")
             
-    return model.beta.weight.detach() # Keep on Device for now
+    model.eval()
+    model.cpu() 
+    return model
 
 # ==========================================
-# 3. Main Pipeline
+# 3. Main Pipeline (With Diagnostics)
 # ==========================================
-def run_pipeline():
-    # --- A. Setup ---
-    print(">>> Initializing Real Data Experiment...")
+def run_pipeline(
+    utility_model_type: str = 'linear',
+    mnl_lr: float = None,
+    mnl_epochs: int = None
+):
+    print(f"\n>>> Initializing Real Data Experiment [{utility_model_type.upper()}]...")
     cfg = RealExpConfig()
-    preprocessor = ExpediaPreprocessor(cfg)
     
-    # --- B. Load & Process ---
-    # Set nrows=None for full run, or 200_000 for fast testing
+    # Config Override
+    cfg.utility_model_type = utility_model_type
+    if mnl_lr is not None: cfg.mnl_lr = mnl_lr
+    if mnl_epochs is not None: cfg.mnl_epochs = mnl_epochs
+        
+    preprocessor = ExpediaPreprocessor(cfg)
     train_df, test_df = preprocessor.load_and_process(nrows=None)
     
-    # Identify Feature Columns indices for PyTorch slicing
-    # Note: DataLoader handles this mapping internally, we just need the column list
     all_feat_cols = preprocessor.final_feat_cols
     cat_indices = preprocessor.cat_features_indices
     
-    # --- C. Train Simulator (CatBoost) ---
+    # --- Train Simulator ---
     print("\n>>> Step 1: Training Simulator on Historical CLICK Data...")
-    # Bias Source: Training on Clicks (Window Shopping), Predicting Bookings
-    
     train_loader = ExpediaDataLoader(cfg, train_df, all_feat_cols)
     X_train, y_train, _ = train_loader.get_catboost_data(target_col='booking_bool', only_clicks=True)
     
-    print(f"   Simulator Training Samples: {len(X_train)}")
-    
-    # Initialize CatBoost (CPU optimized)
     sim_model = CatBoostClassifier(
         iterations=cfg.cat_iterations,
         depth=cfg.cat_depth,
         learning_rate=cfg.cat_learning_rate,
         loss_function='Logloss',
-        verbose=100,
+        verbose=100, 
         task_type="CPU",
         allow_writing_files=False,
         random_seed=cfg.seed
@@ -143,151 +146,119 @@ def run_pipeline():
     sim_model.fit(X_train, y_train, cat_features=cat_indices)
     print("   Simulator Trained.")
 
-    # --- D. Calibration Phase ---
+    # --- Calibration Phase ---
     print("\n>>> Step 2: Calibration on Current Data (Observed Sales)...")
-    
-    # 1. Prepare DataLoader for Test Set
     test_loader = ExpediaDataLoader(cfg, test_df, all_feat_cols)
-    
-    # 2. Estimate Beta (Inside Utility) using MNL
-    # We need the dimension of Item Features (X)
-    # data_loader.item_feat_indices gives us the count
     dim_item_feat = len(test_loader.item_feat_indices)
     
-    beta_hat = train_mnl(cfg, test_loader, dim_item_feat)
+    # 1. Train Utility Model
+    utility_model = train_mnl(cfg, test_loader, dim_item_feat)
     
-    # 3. Construct Calibration Vectors (Z, s_hat, y_sim)
-    # We need these for the BOOKING sessions only
-    print("   Constructing calibration vectors...")
+    # 2. Construct Vectors
+    print("   Constructing calibration vectors (Vectorized)...")
+    booked_srch_ids = test_df[test_df['booking_bool'] == 1]['srch_id'].unique()
+    current_sales_df = test_df[test_df['srch_id'].isin(booked_srch_ids)].copy()
     
-    batch_booking = test_loader.get_pytorch_data(filter_booking_only=True)
+    # Calculate s_hat
+    item_col_names = [all_feat_cols[i] for i in test_loader.item_feat_indices]
+    sales_items_x = torch.tensor(current_sales_df[item_col_names].values).float()
     
-    # Z (Context): Already in batch
-    Z_calib = batch_booking['context'].to(cfg.device)
+    with torch.no_grad():
+        sales_u = utility_model.forward_flat(sales_items_x).numpy()
     
-    # s_hat (Inclusive Value): Need to compute using beta_hat
-    # s = LogSumExp(X * beta)
-    items_calib = batch_booking['items'].to(cfg.device) # (N, L, D)
-    mask_calib = batch_booking['mask'].to(cfg.device)   # (N, L)
+    current_sales_df['u_hat'] = sales_u
+    print("   Aggregating s_hat...")
+    s_series = current_sales_df.groupby('srch_id')['u_hat'].apply(lambda x: logsumexp(x.values))
     
-    # Compute Utilities U = X * beta
-    # beta_hat: (1, D) -> Transpose to (D, 1)
-    U_calib = (items_calib @ beta_hat.t()).squeeze(-1) # (N, L)
+    ctx_df = current_sales_df.groupby('srch_id')[list(cfg.context_cols)].first()
     
-    # Mask padding before LogSumExp
-    U_calib = U_calib.masked_fill(mask_calib == 0, -1e9)
-    s_calib = torch.logsumexp(U_calib, dim=1) # (N,)
+    # Simulator Preds
+    current_sales_df['sim_p_book'] = sim_model.predict_proba(current_sales_df[all_feat_cols])[:, 1]
+    sim_p_nobuy = 1.0 - current_sales_df.groupby('srch_id')['sim_p_book'].sum()
+    sim_p_nobuy = np.clip(sim_p_nobuy, 0.001, 0.999)
+    y_series = np.log(sim_p_nobuy / (1 - sim_p_nobuy))
     
-    # y_sim (Simulator Logit):
-    # Strategy: 
-    # 1. Predict P(Book) for ALL rows in Test DF using CatBoost
-    # 2. Aggregate by srch_id to get P(NoBuy) for each session
-    # 3. Select only the sessions corresponding to batch_booking['unique_ids']
+    # Align
+    common_index = s_series.index
+    z_df = ctx_df.loc[common_index]
+    y_data = y_series.loc[common_index]
     
-    print("   Running Simulator on all test data...")
-    # CatBoost needs flat data. Use loader helper.
-    X_test_flat, _, _ = test_loader.get_catboost_data(only_clicks=False)
+    z_tensor = torch.tensor(z_df.values).float().to(cfg.device)
+    s_tensor = torch.tensor(s_series.values).float().to(cfg.device)
+    y_tensor = torch.tensor(y_data.values).float().to(cfg.device)
     
-    # Predict Proba (Class 1 = Booking)
-    sim_preds_flat = sim_model.predict_proba(X_test_flat)[:, 1]
-    
-    # Add to DataFrame temporarily for efficient grouping
-    test_df['sim_p_book'] = sim_preds_flat
-    
-    # Aggregate: P(NoBuy) = 1 - sum(P_book_items)
-    # (Heuristic approximation for point-wise simulators)
-    sim_session_p_book = test_df.groupby('srch_id')['sim_p_book'].sum()
-    sim_session_p_nobuy = 1.0 - sim_session_p_book
-    
-    # Clip to avoid log(0) or log(negative)
-    sim_session_p_nobuy = sim_session_p_nobuy.clip(0.001, 0.999)
-    sim_session_logit = np.log(sim_session_p_nobuy / (1 - sim_session_p_nobuy))
-    
-    # Align with PyTorch Batch
-    # batch_booking['unique_ids'] contains the srch_ids in the tensor order
-    target_srch_ids = batch_booking['unique_ids']
-    
-    # Select and convert to Tensor
-    y_calib_np = sim_session_logit.loc[target_srch_ids].values
-    y_calib = torch.from_numpy(y_calib_np).float().to(cfg.device)
-    
-    # 4. Run Solvers
+    # 3. Run Solvers
     print("   Solving Calibration...")
     solver = CalibrationSolver(cfg)
-    
-    # Linear
-    gamma_lin = solver.solve_linear(Z_calib, s_calib, y_calib)
-    
-    # MRC
-    gamma_mrc = solver.solve_mrc(Z_calib, s_calib, y_calib)
+    gamma_lin = solver.solve_linear(z_tensor, s_tensor, y_tensor)
+    gamma_mrc = solver.solve_mrc(z_tensor, s_tensor, y_tensor)
     
     print(f"   Gamma Norms | Linear: {gamma_lin.norm().item():.2f}, MRC: {gamma_mrc.norm().item():.2f}")
+    # [Diagnostic] Print first few weights to see if they differ
+    print(f"   Gamma Head (Lin): {gamma_lin[:3].cpu().numpy()}")
+    print(f"   Gamma Head (MRC): {gamma_mrc[:3].cpu().numpy()}")
 
-    # --- E. Final Evaluation ---
-    print("\n>>> Step 3: Evaluation on FULL Test Set (Hidden No-Purchases)...")
+    # --- Final Evaluation ---
+    print("\n>>> Step 3: Evaluation on FULL Test Set...")
     
-    # We want to predict P(No Purchase) for ALL sessions in Test (Booked + Not Booked)
-    # And compare with Ground Truth.
+    y_true = test_df.groupby('srch_id')['booking_bool'].sum().apply(lambda x: 1 if x==0 else 0).values
     
-    # 1. Ground Truth Labels
-    # If a session has 0 bookings, label=1 (No Purchase). Else 0.
-    gt_labels = test_df.groupby('srch_id')['booking_bool'].sum().apply(lambda x: 1 if x==0 else 0)
-    y_true = gt_labels.values
+    # Update U and S with the trained model
+    test_items_x = torch.tensor(test_df[item_col_names].values).float()
+    with torch.no_grad():
+        test_u = utility_model.forward_flat(test_items_x).numpy()
+    test_df['u_hat'] = test_u
     
-    # 2. Simulator Predictions (Baseline)
-    # We already calculated sim_session_p_nobuy for everyone
-    # Make sure order aligns with y_true (groupby sorts by key by default)
-    p_sim = sim_session_p_nobuy.values
+    print("   Calculating s_hat for all test sessions...")
+    test_s_hat = test_df.groupby('srch_id')['u_hat'].apply(lambda x: logsumexp(x.values))
     
-    # 3. Model Predictions (Linear & MRC)
-    # We need Z and s_hat for ALL sessions (not just booked ones)
+    test_ctx = test_df.groupby('srch_id')[list(cfg.context_cols)].first()
+    eval_z = torch.tensor(test_ctx.values).float().to(cfg.device)
+    eval_s = torch.tensor(test_s_hat.values).float().to(cfg.device)
     
-    # Get Full Batch
-    batch_full = test_loader.get_pytorch_data(filter_booking_only=False)
-    
-    # Z (Full)
-    Z_full = batch_full['context'].to(cfg.device)
-    
-    # s (Full) - Recompute using beta_hat
-    items_full = batch_full['items'].to(cfg.device)
-    mask_full = batch_full['mask'].to(cfg.device)
-    
-    U_full = (items_full @ beta_hat.t()).squeeze(-1)
-    U_full = U_full.masked_fill(mask_full == 0, -1e9)
-    s_full = torch.logsumexp(U_full, dim=1)
-    
-    # Helper: Prob Function
-    # Logit(P0) = u0 - s = Z*gamma - s
-    def get_p0(gamma, Z, s):
-        u0 = Z @ gamma
-        eta = u0 - s
+    def get_p0(gamma):
+        u0 = eval_z @ gamma
+        eta = u0 - eval_s
         return torch.sigmoid(eta).cpu().numpy()
     
-    p_lin = get_p0(gamma_lin, Z_full, s_full)
-    p_mrc = get_p0(gamma_mrc, Z_full, s_full)
+    p_lin = get_p0(gamma_lin)
+    p_mrc = get_p0(gamma_mrc)
     
-    # 4. Compute NLL (Log Loss)
-    nll_sim = log_loss(y_true, p_sim)
+    # [Diagnostic] Check Predictions
+    print(f"   [Diag] P_Lin: Mean={p_lin.mean():.4f}, Min={p_lin.min():.6f}, Max={p_lin.max():.6f}")
+    print(f"   [Diag] P_MRC: Mean={p_mrc.mean():.4f}, Min={p_mrc.min():.6f}, Max={p_mrc.max():.6f}")
+    
+    # Simulator Baseline
+    test_df['sim_p'] = sim_model.predict_proba(test_df[all_feat_cols])[:, 1]
+    sim_p_nobuy = 1.0 - test_df.groupby('srch_id')['sim_p'].sum()
+    sim_p_nobuy = np.clip(sim_p_nobuy, 0.001, 0.999).values
+    
+    nll_sim = log_loss(y_true, sim_p_nobuy)
     nll_lin = log_loss(y_true, p_lin)
     nll_mrc = log_loss(y_true, p_mrc)
     
-    print("\n" + "="*40)
-    print(f" EVALUATION RESULTS (Test Set N={len(y_true)})")
-    print(" Negative Log Likelihood (Lower is Better)")
-    print("="*40)
-    print(f" 1. Simulator (Uncalibrated):  {nll_sim:.5f}")
-    print(f" 2. Linear Calibration:        {nll_lin:.5f}")
-    print(f" 3. MRC Calibration (Ours):    {nll_mrc:.5f}")
-    print("="*40)
+    print("-" * 40)
+    print(f" RESULTS: [{utility_model_type.upper()}] Utility Model")
+    print("-" * 40)
+    print(f" Simulator NLL: {nll_sim:.5f}")
+    print(f" Linear Calib:  {nll_lin:.5f}")
+    print(f" MRC Calib:     {nll_mrc:.5f}")
+    print("-" * 40)
     
-    # Interpretation
-    print("\n[Analysis]")
-    if nll_mrc < nll_sim:
-        print("SUCCESS: MRC improved over the raw simulator.")
-    if nll_mrc < nll_lin:
-        print("SUCCESS: MRC outperformed Linear calibration (Robustness verified).")
-    else:
-        print("NOTE: Linear performed similarly/better. Check if Simulator bias is effectively linear.")
+    return {'model': utility_model_type, 'nll_mrc': nll_mrc, 'nll_lin': nll_lin}
 
 if __name__ == "__main__":
-    run_pipeline()
+    res_lin = run_pipeline(utility_model_type='linear')
+    res_nn = run_pipeline(utility_model_type='neural', mnl_lr=0.001, mnl_epochs=50)
+    
+    print("\n" + "="*50)
+    print(" FINAL COMPARISON: Linear vs Neural Utility ")
+    print("="*50)
+    print(f" Linear MNL -> MRC NLL: {res_lin['nll_mrc']:.5f}")
+    print(f" Neural MNL -> MRC NLL: {res_nn['nll_mrc']:.5f}")
+    
+    improvement = res_lin['nll_mrc'] - res_nn['nll_mrc']
+    if improvement > 0:
+        print(f" --> Neural Utility Improved NLL by {improvement:.5f}")
+    else:
+        print(f" --> Neural Utility did NOT improve (-{-improvement:.5f})")

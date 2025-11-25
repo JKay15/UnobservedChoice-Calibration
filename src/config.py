@@ -129,6 +129,7 @@ class RealExpConfig:
     cat_early_stopping: int = 50
     
     # Conditional MNL
+    utility_model_type: str = 'linear'
     mnl_epochs: int = 30
     mnl_lr: float = 0.05
     mnl_batch_size: int = 4096
