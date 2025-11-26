@@ -52,9 +52,6 @@ class EngineFactory:
         else:
             raise ValueError(f"Unknown y_type: {y_type}")
             
-        # =====================================================
-        # [CRITICAL FIX] Move all modules to the configured device
-        # =====================================================
         device = cfg.device
         source_pipeline.to(device)
         z_mapper.to(device)

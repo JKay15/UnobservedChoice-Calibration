@@ -243,7 +243,6 @@ def run_experiment_grid(
                     'seed': seed,
                     **metrics
                 }
-                # [FIX] Explicitly record n_samples
                 record['n_samples'] = cfg.n_samples
                 
                 if comp_name:
@@ -363,15 +362,13 @@ if __name__ == "__main__":
         sim_bias_b=15
     )
     regret_cfg = ExpConfig(
-        n_samples=2000,        # N=2000 足够了，不需要 20000
+        n_samples=2000,       
         
-        # [Change 1] Increase Bias Scale significantly
         # Since we normalized u0, we need a larger bias_b to create distortion
         sim_bias_b=15.0,       
         sim_bias_a=0.0,
         est_noise_sigma=0.1,
         
-        # [Change 2] Make the Assortment Problem Harder
         # Increase item feature dim so u_i has more variance relative to u_0
         dim_item_feat=10,      
         

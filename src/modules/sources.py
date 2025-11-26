@@ -14,8 +14,8 @@ class SourcePipeline(nn.Module):
     """
     def __init__(self, 
                  cfg: ExpConfig, 
-                 sampler: BaseSampler,           # <--- 注入点 1: 数据的来源 (S)
-                 context_mapper: BaseContextMapper): # <--- 注入点 2: X 的生成逻辑
+                 sampler: BaseSampler,         
+                 context_mapper: BaseContextMapper): 
         super().__init__()
         self.cfg = cfg
         self.sampler = sampler

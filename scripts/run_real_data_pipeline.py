@@ -102,7 +102,6 @@ def train_mnl(cfg, data_loader, item_dim):
             optimizer.step()
             total_loss += loss.item()
             
-        # [RESTORED] Print every 5 epochs for better visibility
         if (epoch + 1) % 5 == 0:
             avg_loss = total_loss / n_batches
             print(f"   Epoch {epoch+1}/{cfg.mnl_epochs} | Loss: {avg_loss:.4f}")
@@ -127,7 +126,7 @@ def run_pipeline(
     cfg.utility_model_type = utility_model_type
     if mnl_lr is not None: cfg.mnl_lr = mnl_lr
     if mnl_epochs is not None: cfg.mnl_epochs = mnl_epochs
-        
+    
     preprocessor = ExpediaPreprocessor(cfg)
     train_df, test_df = preprocessor.load_and_process(nrows=None)
     

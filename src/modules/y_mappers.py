@@ -50,7 +50,6 @@ class MonotoneYMapper(BaseYMapper):
     Scenario B: Non-linear Monotone Distortion.
     """
     def _link_function(self, eta: torch.Tensor) -> torch.Tensor:
-        # [FIX] Use config to control scale instead of hardcoded 10.0
         # sim_bias_b controls the Amplitude/Steepness of the distortion
         # Larger b = More saturation = Harder for Linear algo
         scale = self.cfg.sim_bias_b 

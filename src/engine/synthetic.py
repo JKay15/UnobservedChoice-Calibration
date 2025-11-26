@@ -88,7 +88,7 @@ class SyntheticDataEngine:
                 'z': z_val,
                 's_hat': s_hat,
                 'y': y_obs,
-                'batch': batch # Raw data (useful for debugging or MLE mode)
+                'batch': batch 
             },
             
             # Ground Truth

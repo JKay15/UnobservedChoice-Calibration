@@ -96,67 +96,6 @@ class StatsZMapper(BaseZMapper):
         
         return z
     
-# class NeuralZMapper(BaseZMapper):
-#     """
-#     Advanced Strategy: Neural Network based mapping.
-    
-#     This class acts as a WRAPPER/ADAPTER. 
-#     It does not define the network structure itself.
-#     Instead, it accepts an injected `backbone` (nn.Module).
-    
-#     This allows using:
-#     1. Random MLPs (for synthetic ablation)
-#     2. Pre-trained Deep Sets/Transformers (for real data)
-#     """
-#     def __init__(self, cfg: ExpConfig, backbone: nn.Module = None):
-#         super().__init__(cfg)
-        
-#         if backbone is None:
-#             # Optional: Provide a sensible default for simple synthetic tests
-#             # ONLY if the user didn't provide one.
-#             # We create a simple Permutation Invariant Network (Deep Sets style)
-#             input_dim = cfg.dim_item_feat
-#             # Note: We rely on cfg.dim_z here because we must output the correct dimension
-#             self.backbone = self._build_default_backbone(input_dim, cfg.dim_z)
-#         else:
-#             # Use the injected pre-trained model
-#             self.backbone = backbone
-
-#     def _build_default_backbone(self, input_dim: int, output_dim: int) -> nn.Module:
-#         """
-#         Helper to build a simple Deep Sets network for synthetic experiments.
-#         Phi(x) -> Sum -> Rho(x)
-#         """
-#         class SimpleDeepSets(nn.Module):
-#             def __init__(self, in_d, out_d):
-#                 super().__init__()
-#                 self.phi = nn.Sequential(nn.Linear(in_d, 32), nn.ReLU())
-#                 self.rho = nn.Sequential(nn.Linear(32, out_d))
-            
-#             def forward(self, items, mask, context):
-#                 # items: (B, L, D)
-#                 h = self.phi(items)
-#                 # Masking
-#                 h = h * mask.unsqueeze(-1)
-#                 # Sum Pooling
-#                 h_sum = torch.sum(h, dim=1)
-#                 # If context exists, concat it (Simple fusion)
-#                 if context.numel() > 0:
-#                     # Assuming context mapping needs to be handled by rho, 
-#                     # but for this default, we ignore context fusion complexity.
-#                     pass 
-#                 return self.rho(h_sum)
-                
-#         return SimpleDeepSets(input_dim, output_dim)
-
-#     def forward(self, batch: TensorBatch) -> torch.Tensor:
-#         """
-#         Passes the raw batch data to the backbone network.
-#         The backbone is expected to handle padding/masking internally.
-#         """
-#         # We pass individual tensors to be flexible with different model signatures
-#         z = self.backbone(batch.items, batch.mask, batch.context)
-#         return z
 
 class NeuralZMapper(BaseZMapper):
     """
@@ -168,7 +107,7 @@ class NeuralZMapper(BaseZMapper):
         super().__init__(cfg)
         
         input_dim = cfg.dim_item_feat
-        output_dim = cfg.dim_z  # <--- 关键：这里接收 Config 里的动态维度
+        output_dim = cfg.dim_z 
         
         # 1. Build the Network (Your logic)
         self.backbone = self._build_default_backbone(input_dim, output_dim)

@@ -26,8 +26,6 @@ class CalibrationSolver:
         A = torch.cat([ones, z, s_hat_col], dim=1)
         
         # 2. Solve Least Squares: min ||A*theta - y||^2
-        # 【Fix for Mac MPS】: MPS currently doesn't support lstsq.
-        # We strictly perform this specific solve on CPU.
         if self.device == 'mps':
             A_cpu = A.cpu()
             y_cpu = y.view(-1, 1).cpu()
@@ -52,94 +50,10 @@ class CalibrationSolver:
         
         return gamma_hat
 
-    # def solve_mrc(self, z: torch.Tensor, s_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    #     """
-    #     Algorithm 2: Maximum Rank Correlation (MRC) Calibration.
-        
-    #     Objective: Find gamma that maximizes the rank correlation between
-    #                eta = (gamma^T z - s_hat)  and  y.
-        
-    #     Implementation:
-    #     Since the rank indicator function is non-differentiable, we use a 
-    #     smooth Pairwise Logistic Loss (Proxy Objective).
-        
-    #     Loss = sum_{i,j} log(1 + exp( -sign(y_i - y_j) * (eta_i - eta_j) ))
-        
-    #     Optimizer: L-BFGS (Quasi-Newton method) for high precision convergence.
-    #     """
-    #     N = y.shape[0]
-    #     dim_z = z.shape[1]
-        
-    #     # 1. Initialize Gamma
-    #     # Use standard normal initialization. requires_grad=True for optimization.
-    #     gamma = torch.zeros(dim_z, device=self.device, requires_grad=True)
-        
-    #     # Initialize with a small random noise to break symmetry if needed, 
-    #     # or just zeros if the loss surface is convex enough.
-    #     with torch.no_grad():
-    #         gamma.normal_(0, 0.1)
-
-    #     # 2. Define Optimizer (L-BFGS is standard for MRC-like problems)
-    #     # It usually converges much faster/accurately than SGD/Adam for this scale.
-    #     optimizer = optim.LBFGS([gamma], lr=1.0, max_iter=100, history_size=10)
-
-    #     # 3. Prepare Pairwise Targets (y_i - y_j)
-    #     # To avoid O(N^2) memory explosion for large N, we can:
-    #     # A. Use full matrix if N <= 5000 (5000^2 * 4 bytes ~ 100MB, totally fine on GPU)
-    #     # B. Use mini-batch sampling if N is huge.
-    #     # Here we assume N <= 10000, so full matrix is fine.
-        
-    #     # y_diff_sign: Sign of (y_i - y_j)
-    #     # shape: (N, 1) - (1, N) -> (N, N) via broadcasting
-    #     y_diff = y.view(-1, 1) - y.view(1, -1)
-    #     y_sign = torch.sign(y_diff) # {-1, 0, 1}
-        
-    #     # We only care about pairs where y_i != y_j (informative pairs)
-    #     # Mask out ties or diagonal
-    #     mask = (y_sign != 0)
-        
-    #     # 4. Optimization Loop (L-BFGS requires a closure)
-    #     def closure():
-    #         optimizer.zero_grad()
-            
-    #         # Calculate estimated eta
-    #         # eta = z @ gamma - s_hat
-    #         eta = z @ gamma - s_hat
-            
-    #         # Calculate pairwise differences of eta
-    #         # eta_diff: (N, N)
-    #         eta_diff = eta.view(-1, 1) - eta.view(1, -1)
-            
-    #         # Soft Rank Loss (Logistic Loss on pairs)
-    #         # We want sign(eta_diff) to match y_sign.
-    #         # Maximize y_sign * eta_diff  => Minimize -y_sign * eta_diff
-    #         # Smooth approximation: Softplus(-y_sign * eta_diff)
-    #         # This is equivalent to BCE on pairs.
-            
-    #         # Apply mask to only train on informative pairs
-    #         loss = torch.sum(torch.nn.functional.softplus(-y_sign[mask] * eta_diff[mask]))
-            
-    #         # Normalize by number of pairs to keep gradient scale reasonable
-    #         loss = loss / mask.sum()
-            
-    #         if loss.requires_grad:
-    #             loss.backward()
-            
-    #         return loss
-
-    #     # Run Optimization
-    #     optimizer.step(closure)
-        
-    #     return gamma.detach()
     def solve_mrc(self, z: torch.Tensor, s_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """
         Algorithm 2: Maximum Rank Correlation (MRC).
         """
-        # ==========================================
-        # [Stability Fix] MPS Fallback
-        # MPS on Mac often crashes (Trace Trap) with L-BFGS or massive indexing.
-        # We force CPU execution for the optimization loop if device is MPS.
-        # ==========================================
         target_device = self.device
         if target_device == 'mps':
             target_device = 'cpu'
@@ -158,8 +72,6 @@ class CalibrationSolver:
         optimizer = optim.LBFGS([gamma], lr=1.0, max_iter=50, history_size=10, line_search_fn='strong_wolfe')
 
         # 2. Pair Sampling Strategy
-        # [Optimization] 3M pairs is too much and causes OOM/Crash. 
-        # 200k is sufficient for convergence.
         n_pairs = 200_000 
         
         use_sampling = (N * N > n_pairs * 2) # Use sampling if full matrix is much larger than n_pairs
@@ -172,7 +84,6 @@ class CalibrationSolver:
             mask = (y_sign != 0)
         else:
             # Sampling Mode
-            # Generate indices on the target device (CPU if MPS)
             idx_i = torch.randint(0, N, (n_pairs,), device=target_device)
             idx_j = torch.randint(0, N, (n_pairs,), device=target_device)
             
@@ -181,7 +92,7 @@ class CalibrationSolver:
             y_j = y[idx_j]
             y_sign_sample = torch.sign(y_i - y_j)
             
-            # Pre-fetch features (Running this on CPU avoids the MPS Trace Trap)
+            # Pre-fetch features
             z_i = z[idx_i]
             z_j = z[idx_j]
             s_i = s_hat[idx_i]
