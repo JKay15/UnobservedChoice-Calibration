@@ -4,7 +4,8 @@ from ..config import ExpConfig
 from ..modules.samplers import SyntheticSampler
 from ..modules.context_mappers import AvgContextMapper, ConcatContextMapper
 from ..modules.sources import SourcePipeline
-from ..modules.z_mappers import StatsZMapper, NeuralZMapper
+# [Updated] Import IndependentZMapper
+from ..modules.z_mappers import StatsZMapper, NeuralZMapper, IndependentZMapper
 from ..modules.u_mappers import LinearUtilityMapper, NeuralUtilityMapper
 from ..modules.y_mappers import LinearYMapper, MonotoneYMapper
 
@@ -18,19 +19,29 @@ class EngineFactory:
     
     @staticmethod
     def build_synthetic_engine(cfg: ExpConfig, 
+                               context_mapper_type: str = 'concat',
                                z_type: str = 'stats',
                                u_type: str = 'linear',
                                y_type: str = 'linear',
-                               z_model_path: str = None) -> SyntheticDataEngine:
+                               z_model_path: str = None,
+                               norm:bool=False) -> SyntheticDataEngine:
         
         # 1. Build Source Pipeline
         sampler = SyntheticSampler(cfg)
-        context_mapper = AvgContextMapper(cfg)
+        if context_mapper_type == 'avg':
+            context_mapper = AvgContextMapper(cfg)
+        elif context_mapper_type == 'concat':
+            context_mapper = ConcatContextMapper(cfg)
+        else:
+            raise ValueError(f"Unknown context_mapper_type: {context_mapper_type}")
         source_pipeline = SourcePipeline(cfg, sampler, context_mapper)
         
         # 2. Build Z Mapper
+        # [Updated] Added support for IndependentZMapper
         if z_type == 'stats':
             z_mapper = StatsZMapper(cfg)
+        elif z_type == 'independent':
+            z_mapper = IndependentZMapper(cfg)
         elif z_type == 'neural':
             z_mapper = NeuralZMapper(cfg, model_path=z_model_path)
         else:
@@ -64,7 +75,8 @@ class EngineFactory:
             source_pipeline=source_pipeline,
             z_mapper=z_mapper,
             u_mapper=u_mapper,
-            y_mapper=y_mapper
+            y_mapper=y_mapper,
+            norm=norm
         )
         
         return engine

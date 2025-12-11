@@ -1,72 +1,52 @@
 import torch
-import torch.nn as nn
 from typing import Tuple
 
 def solve_optimal_assortment(
     gamma: torch.Tensor,
     z: torch.Tensor,
     item_revenues: torch.Tensor,
-    item_utilities: torch.Tensor
+    item_utilities: torch.Tensor,
+    yes:bool=False
 ) -> Tuple[torch.Tensor, float]:
     """
-    Solves the unconstrained Assortment Optimization problem under MNL.
-    
-    Problem:
-        max_{S} R(S) = (sum_{i in S} r_i * v_i) / (v_0 + sum_{i in S} v_i)
-        where v_i = exp(u_i), v_0 = exp(u_0) = exp(gamma^T z)
-    
-    Algorithm:
-        Static MNL Optimization. The optimal set is always a "Revenue-Ordered" set.
-        We sort items by revenue r_i descending, and check all prefixes.
-    
-    Args:
-        gamma: (dim_z,) Estimated or True parameter for outside option.
-        z: (dim_z,) Context feature for the current decision instance.
-        item_revenues: (n_items,) Prices/Revenues of candidate items.
-        item_utilities: (n_items,) Inside utilities u_i (before exp) of candidate items.
-        
-    Returns:
-        best_mask: (n_items,) Binary mask of the optimal assortment.
-        max_revenue: Expected revenue of the optimal assortment.
+    Solves unconstrained Assortment Optimization:
+    max_S sum(r_i * v_i) / (v0 + sum v_i)
     """
-    # 1. Calculate Terms
-    # v0 = exp(gamma^T z)
+    # 1. Calculate Outside Option 的 "Score" v0
+    # gamma: (d,), z: (d,)
     u0 = torch.dot(z, gamma)
     v0 = torch.exp(u0)
     
-    # v_i = exp(u_i)
+    # 2. calculate Inside Items 的 "Score" v_i
+    # item_utilities 是 log scale 的 u_i
     v_items = torch.exp(item_utilities)
     
-    # 2. Sort items by Revenue (Descending)
-    # This is the key property of MNL assortment optimization
+    # 3. (Revenue-Ordered Set)
     sorted_revs, sorted_indices = torch.sort(item_revenues, descending=True)
     sorted_vs = v_items[sorted_indices]
     
-    # 3. Iterate through all candidate Revenue-Ordered sets
-    # Set k: includes top-k items
-    # R_k = (sum_{1..k} r_i v_i) / (v0 + sum_{1..k} v_i)
+    # 4. calculate top k revenue
+    # Numerator: cumsum(r_i * v_i)
+    # Denominator: v0 + cumsum(v_i)
+    num = torch.cumsum(sorted_revs * sorted_vs, dim=0)
+    den = v0 + torch.cumsum(sorted_vs, dim=0)
     
-    # Cumulative Sums
-    numerator_cumsum = torch.cumsum(sorted_revs * sorted_vs, dim=0)
-    denominator_v_cumsum = torch.cumsum(sorted_vs, dim=0)
+    expected_revenues = num / den
     
-    # Expected Revenue for each prefix size k=1...N
-    # Shape: (n_items,)
-    revenues = numerator_cumsum / (v0 + denominator_v_cumsum)
+    # 5.find the best k
+    best_k_idx = torch.argmax(expected_revenues)
+    max_rev = expected_revenues[best_k_idx].item()
     
-    # 4. Find Best k
-    best_idx = torch.argmax(revenues)
-    max_revenue = revenues[best_idx].item()
-    
-    # 5. Construct the optimal set mask
-    # We select top-(best_idx+1) items from the sorted list
-    best_k = best_idx + 1
+    # 6. Mask
+    best_k = best_k_idx + 1
     selected_indices = sorted_indices[:best_k]
     
     best_mask = torch.zeros_like(item_revenues, dtype=torch.bool)
     best_mask[selected_indices] = True
+    if yes:
+        print(best_mask)
     
-    return best_mask, max_revenue
+    return best_mask, max_rev
 
 def calculate_revenue(
     mask: torch.Tensor,
@@ -76,20 +56,21 @@ def calculate_revenue(
     item_utilities_true: torch.Tensor
 ) -> float:
     """
-    Evaluates the TRUE Expected Revenue of a given assortment (mask).
-    Used to compute Regret: R(S_opt) - R(S_hat).
+    Evaluate the TRUE revenue of a chosen assortment (mask).
+    R(S) = (sum_{i in S} r_i v_i^*) / (v0^* + sum_{i in S} v_i^*)
     """
     if not mask.any():
         return 0.0
         
-    # Select chosen items
     r_s = item_revenues[mask]
-    u_s = item_utilities_true[mask]
-    v_s = torch.exp(u_s)
+    u_s_true = item_utilities_true[mask]
+    v_s_true = torch.exp(u_s_true)
     
-    # Outside option
-    v0 = torch.exp(torch.dot(z, gamma_true))
+    # True Outside Option
+    v0_true = torch.exp(torch.dot(z, gamma_true))
     
     # Revenue Formula
-    revenue = torch.sum(r_s * v_s) / (v0 + torch.sum(v_s))
-    return revenue.item()
+    numerator = torch.sum(r_s * v_s_true)
+    denominator = v0_true + torch.sum(v_s_true)
+    
+    return (numerator / denominator).item()

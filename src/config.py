@@ -27,7 +27,10 @@ class ExpConfig:
     # 2. Data Dimensions
     # ==========================================
     n_samples: int = 2000           # Number of samples (N)
-    
+    dim_context:int =24
+    outlier_prob: float = 0.0
+    outlier_scale: float = 50.0
+    sim_noise_type: str = 'gaussian'
     # Assortment Size Range (for variable size S)
     # Data generation will sample size uniformly from [min, max]
     min_assortment_size: int = 5
@@ -51,15 +54,18 @@ class ExpConfig:
     # Controls the source of the estimated inclusive value \hat{s}
     # 'noise_injection': Direct s_hat = s_true + N(0, tau). Verifies Theorem 2.
     # 'mle_estimation':  Simulate choices -> Run Conditional MNL. Verifies end-to-end pipeline.
-    utility_mode: Literal['noise_injection', 'mle_estimation'] = 'noise_injection'
+    utility_mode: Literal['structural', 'additive'] = 'structural'
+    
+    # [NEW] Noise Distribution Type
+    # 'gaussian': Normal distribution N(0, sigma^2). Targets MSE (bar_tau).
+    # 'uniform':  Uniform distribution U[-sigma, sigma]. Targets Max Error (tau_s).
+    # Note: For 'structural' mode, this dictates the distribution of delta_beta.
+    noise_distribution: Literal['gaussian', 'uniform'] = 'gaussian'
     
     # Parameter for 'noise_injection' mode:
     # Standard deviation of the estimation error (controls \tau)
     est_noise_sigma: float = 0.1        
     
-    # Parameter for 'mle_estimation' mode:
-    # Number of purchase samples used to estimate beta (controls estimation quality)
-    est_sample_size: int = 5000     
     # ==========================================
     # 4. Simulator Settings (y generation)
     # ==========================================

@@ -4,7 +4,6 @@ import torch
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from sklearn.metrics import log_loss
 from catboost import CatBoostClassifier, Pool
 from scipy.special import logsumexp
 import matplotlib.pyplot as plt
@@ -12,6 +11,7 @@ import seaborn as sns
 import datetime
 from pathlib import Path
 from sklearn.calibration import calibration_curve
+from sklearn.metrics import roc_auc_score
 
 # Add project root to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -20,6 +20,39 @@ from src.config import RealExpConfig
 from src.datasets.real_preprocessing import ExpediaPreprocessor
 from src.datasets.data_loader import ExpediaDataLoader
 from src.algorithms.solver import CalibrationSolver
+from src.utils.metrics import compute_p0_from_logits, compute_nll
+
+# ==========================================
+# [NEW] Helper Metrics Functions
+# ==========================================
+def compute_ece(y_true, y_prob, n_bins=10):
+    """
+    Expected Calibration Error (ECE).
+    Measures the weighted average absolute difference between predicted probability 
+    and empirical accuracy across bins.
+    """
+    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+    ece = 0.0
+    total_samples = len(y_true)
+    
+    for i in range(n_bins):
+        bin_lower = bin_boundaries[i]
+        bin_upper = bin_boundaries[i+1]
+        
+        # Select samples in this bin
+        in_bin = (y_prob > bin_lower) & (y_prob <= bin_upper)
+        n_in_bin = np.sum(in_bin)
+        
+        if n_in_bin > 0:
+            # Empirical accuracy in this bin
+            acc_in_bin = np.mean(y_true[in_bin])
+            # Average predicted prob in this bin
+            conf_in_bin = np.mean(y_prob[in_bin])
+            
+            # Weighted absolute difference
+            ece += np.abs(acc_in_bin - conf_in_bin) * (n_in_bin / total_samples)
+            
+    return ece
 
 # # ==========================================
 # # 1. MNL Model Definition
@@ -60,6 +93,7 @@ class NeuralUtilityModel(torch.nn.Module):
 
     def forward_flat(self, x):
         return self.net(x).squeeze(-1)
+
 # ==========================================
 # 2. Training Helper (Restored Visualization)
 # ==========================================
@@ -221,13 +255,10 @@ def run_pipeline(
     eval_z = torch.tensor(test_ctx.values).float().to(cfg.device)
     eval_s = torch.tensor(test_s_hat.values).float().to(cfg.device)
     
-    def get_p0(gamma):
-        u0 = eval_z @ gamma
-        eta = u0 - eval_s
-        return torch.sigmoid(eta).cpu().numpy()
     
-    p_lin = get_p0(gamma_lin)
-    p_mrc = get_p0(gamma_mrc)
+    # 1. Get Probabilities (For plotting) - Move to CPU numpy for visualization
+    p_lin = compute_p0_from_logits(eval_z, eval_s, gamma_lin).cpu().numpy()
+    p_mrc = compute_p0_from_logits(eval_z, eval_s, gamma_mrc).cpu().numpy()
     
     # [Diagnostic] Check Predictions
     print(f"   [Diag] P_Lin: Mean={p_lin.mean():.4f}, Min={p_lin.min():.6f}, Max={p_lin.max():.6f}")
@@ -238,23 +269,42 @@ def run_pipeline(
     sim_p_nobuy = 1.0 - test_df.groupby('srch_id')['sim_p'].sum()
     sim_p_nobuy = np.clip(sim_p_nobuy, 0.001, 0.999).values
     
-    nll_sim = log_loss(y_true, sim_p_nobuy)
-    nll_lin = log_loss(y_true, p_lin)
-    nll_mrc = log_loss(y_true, p_mrc)
+    nll_sim = compute_nll(sim_p_nobuy, y_true)
+    nll_lin = compute_nll(p_lin, y_true)
+    nll_mrc = compute_nll(p_mrc, y_true)
     
-    print("-" * 40)
+    # [NEW] ECE
+    ece_sim = compute_ece(y_true, sim_p_nobuy)
+    ece_lin = compute_ece(y_true, p_lin)
+    ece_mrc = compute_ece(y_true, p_mrc)
+    
+    # [NEW] AUC (Note: y_true=1 means No-Purchase)
+    # We want higher prob for y_true=1.
+    auc_sim = roc_auc_score(y_true, sim_p_nobuy)
+    auc_lin = roc_auc_score(y_true, p_lin)
+    auc_mrc = roc_auc_score(y_true, p_mrc)
+    
+    print("-" * 65)
     print(f" RESULTS: [{utility_model_type.upper()}] Utility Model")
-    print("-" * 40)
-    print(f" Simulator NLL: {nll_sim:.5f}")
-    print(f" Linear Calib:  {nll_lin:.5f}")
-    print(f" MRC Calib:     {nll_mrc:.5f}")
+    print("-" * 65)
+    print(f" {'Method':<12} | {'NLL':<8} | {'ECE':<8} | {'AUC':<8}")
+    print("-" * 65)
+    print(f" {'Simulator':<12} | {nll_sim:.5f}   | {ece_sim:.5f}   | {auc_sim:.5f}")
+    print(f" {'Linear':<12} | {nll_lin:.5f}   | {ece_lin:.5f}   | {auc_lin:.5f}")
+    print(f" {'MRC':<12}    | {nll_mrc:.5f}   | {ece_mrc:.5f}   | {auc_mrc:.5f}")
     print("-" * 40)
     
     result = {
         'model': utility_model_type, 
         'nll_mrc': nll_mrc, 
         'nll_lin': nll_lin,
-        'nll_sim': nll_sim
+        'nll_sim': nll_sim,
+        'ece_sim': ece_sim,
+        'ece_lin': ece_lin,
+        'ece_mrc': ece_mrc,
+        'auc_sim': auc_sim,
+        'auc_lin': auc_lin,
+        'auc_mrc': auc_mrc,
     }
     # [NEW] Return predictions for plotting
     if return_preds:
@@ -266,112 +316,137 @@ def run_pipeline(
         })
     
     return result
-
-# ==========================================
-# 4. Visualization Functions
-# ==========================================
 def plot_real_data_results(res_lin, res_nn):
     """
-    Generates NLL Comparison Bar Chart and Calibration Curves.
-    Args:
-        res_lin: Result dictionary from Linear Utility run (must contain preds)
-        res_nn: Result dictionary from Neural Utility run (must contain preds)
+    Generates Separate Bar Charts (NLL, ECE, AUC) with Hatching + Calibration Curves.
     """
-    # Setup
-    sns.set_theme(style="whitegrid")
+    # 1. Setup Style
+    sns.set_theme(style="ticks", context="paper")
+    plt.rcParams.update({
+        "font.family": "serif", "font.serif": ["Times New Roman"], 
+        "font.size": 18, "axes.labelsize": 20, "axes.titlesize": 22, 
+        "xtick.labelsize": 16, "ytick.labelsize": 16, "legend.fontsize": 16,
+        "lines.linewidth": 3.0, "lines.markersize": 10,
+        "axes.grid": True, "grid.alpha": 0.3
+    })
     save_dir = Path("results/figures")
     save_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    print("\n>>> Generating Visualizations...")
+    # 2. Prepare Data
+    methods = ['Simulator', 'Linear\n(Lin)', 'Linear\n(NN)', 'MRC\n(Lin)', 'MRC\n(NN)']
+    
+    # 颜色 (与 Synthetic 保持一致的 Palette)
+    # Sim=Gray, Linear=Blue, MRC=Red/Orange
+    c_sim = '#7f7f7f'
+    c_lin = '#0072B2'
+    c_mrc = '#D55E00'
+    
+    # Helper for lightness
+    import matplotlib.colors as mc
+    def lighten(c, amount=0.5):
+        c = mc.to_rgb(c)
+        return mc.to_hex((c[0] + (1-c[0])*amount, c[1] + (1-c[1])*amount, c[2] + (1-c[2])*amount))
 
-    # -------------------------------------------------------
-    # Plot 1: NLL Comparison Bar Chart
-    # -------------------------------------------------------
-    plt.figure(figsize=(10, 6))
-    
-    # Prepare Data
-    # We compare:
-    # 1. Simulator (Uncalibrated) - take from linear result (same for both)
-    # 2. Linear Calibration (Linear Utility) - The traditional baseline
-    # 3. MRC (Linear Utility) - Algo improvement
-    # 4. MRC (Neural Utility) - Model improvement (Best)
-    
-    methods = [
-        'Simulator\n(Baseline)', 
-        'Linear Calib\n(Linear Util)', 
-        'MRC\n(Linear Util)', 
-        'MRC\n(Neural Util)'
+    colors = [
+        c_sim, 
+        lighten(c_lin, 0.4), c_lin, 
+        lighten(c_mrc, 0.4), c_mrc
     ]
     
-    nlls = [
-        res_lin['nll_sim'], 
-        res_lin['nll_lin'], 
-        res_lin['nll_mrc'], 
-        res_nn['nll_mrc']
-    ]
+    # [HATCHING] 纹理映射: Sim(/), Linear(x), MRC(.)
+    hatches = ['//', 'xx', 'xx', '..', '..']
+
+    # Metrics Data
+    metrics = {
+        'NLL': ([res_lin['nll_sim'], res_lin['nll_lin'], res_nn['nll_lin'], res_lin['nll_mrc'], res_nn['nll_mrc']], True),
+        'ECE': ([res_lin['ece_sim'], res_lin['ece_lin'], res_nn['ece_lin'], res_lin['ece_mrc'], res_nn['ece_mrc']], True),
+        'AUC': ([res_lin['auc_sim'], res_lin['auc_lin'], res_nn['auc_lin'], res_lin['auc_mrc'], res_nn['auc_mrc']], False)
+    }
     
-    # Colors: Gray for baseline, Blue for Linear, Green for MRC-Lin, Red for MRC-Neural
-    colors = ['#95a5a6', '#3498db', '#2ecc71', '#e74c3c']
-    
-    ax = sns.barplot(x=methods, y=nlls, hue=methods,palette=colors,legend=False)
-    
-    # Decoration
-    plt.title('Negative Log Likelihood (NLL) on Real Data', fontsize=16, fontweight='bold')
-    plt.ylabel('NLL (Lower is Better)', fontsize=14)
-    plt.ylim(0, max(nlls) * 1.15) # Leave space for text
-    
-    # Add value labels on top of bars
-    for i, v in enumerate(nlls):
-        ax.text(i, v + 0.02, f"{v:.4f}", ha='center', va='bottom', fontweight='bold', fontsize=12)
+    # Label Map
+    metric_labels = {
+        'NLL': 'Negative Log-Likelihood',
+        'ECE': 'Expected Calibration Error',
+        'AUC': 'AUC Score'
+    }
+
+    # 3. Bar Chart Generator
+    def save_bar_chart(metric_key):
+        data, is_lower_better = metrics[metric_key]
+        ylabel = metric_labels[metric_key]
         
-    plt.tight_layout()
-    save_path_bar = save_dir / f"real_nll_comparison_{timestamp}.png"
-    plt.savefig(save_path_bar, dpi=300)
-    print(f"   Saved NLL Bar Chart to {save_path_bar}")
-    plt.close()
+        plt.figure(figsize=(8, 6))
+        ax = plt.gca()
+        
+        # Draw Bars with Hatching
+        x_pos = np.arange(len(methods))
+        bars = ax.bar(x_pos, data, color=colors, edgecolor='black', linewidth=1.5, width=0.65)
+        
+        for bar, hatch in zip(bars, hatches):
+            bar.set_hatch(hatch)
 
-    # -------------------------------------------------------
-    # Plot 2: Calibration Curve (Reliability Diagram)
-    # -------------------------------------------------------
-    plt.figure(figsize=(8, 8))
-    
-    # A. Perfect Calibration (Diagonal)
-    plt.plot([0, 1], [0, 1], "k:", label="Perfectly Calibrated", linewidth=2)
-    
-    # Helper to plot curve
-    def add_curve(y_true, y_prob, label, color, fmt='-o'):
-        # calibration_curve bins the data and calculates (mean_pred, fraction_true)
-        frac_of_positives, mean_predicted_value = calibration_curve(y_true, y_prob, n_bins=10)
-        plt.plot(mean_predicted_value, frac_of_positives, fmt, 
-                 color=color, label=label, linewidth=2, markersize=6)
+        # Decorations
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(methods, rotation=15)
+        ax.set_ylabel(ylabel, fontweight='bold')
+        ax.set_title(f"{metric_key} Comparison", pad=15, fontweight='bold')
+        ax.grid(axis='y', linestyle='--', alpha=0.4)
+        
+        # Scaling
+        if is_lower_better:
+            ax.set_ylim(0, max(data) * 1.2)
+            txt_off = max(data) * 0.02
+        else:
+            y_min = min(data) * 0.95
+            ax.set_ylim(y_min, 1.005)
+            txt_off = (1 - y_min) * 0.02
 
-    # B. Simulator (Raw) - Usually miscalibrated
-    add_curve(res_nn['y_true'], res_nn['p_sim'], 
-              "Simulator (Uncalibrated)", "#95a5a6", '--^')
+        # Text Labels
+        for bar in bars:
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height + txt_off,
+                    f'{height:.4f}', ha='center', va='bottom', fontsize=13, fontweight='bold')
+
+        plt.tight_layout()
+        plt.savefig(save_dir / f"real_{metric_key.lower()}_{timestamp}.png")
+        plt.close()
+        print(f"   Saved {metric_key} Chart.")
+
+    # Generate Bars
+    save_bar_chart('NLL')
+    save_bar_chart('ECE')
+    save_bar_chart('AUC')
+
+    # 4. Calibration Curve
+    plt.figure(figsize=(7, 7))
+    plt.plot([0, 1], [0, 1], "k:", label="Perfect", linewidth=2.0)
     
-    # C. Linear Calibration (Linear Util) - The baseline method
-    add_curve(res_lin['y_true'], res_lin['p_lin'], 
-              "Linear Calib (Lin Util)", "#3498db", '-.s')
+    # Config for lines
+    line_cfgs = [
+        (res_nn, 'p_sim', 'Simulator', c_sim, ':', ''),
+        (res_lin, 'p_lin', 'Linear (Lin)', lighten(c_lin, 0.4), '--', 's'),
+        (res_lin, 'p_mrc', 'MRC (Lin)', lighten(c_mrc, 0.4), '-', '^'),
+        (res_nn, 'p_mrc', 'MRC (Neural)', c_mrc, '-', 'D')
+    ]
     
-    # D. MRC (Neural Util) - Our Best Model
-    add_curve(res_nn['y_true'], res_nn['p_mrc'], 
-              "MRC (Neural Util)", "#e74c3c", '-o')
-    
-    # Decoration
-    plt.xlabel("Mean Predicted Probability", fontsize=14)
-    plt.ylabel("Fraction of Positives (Actual No-Purchase Rate)", fontsize=14)
-    plt.title("Calibration Curve (Reliability Diagram)", fontsize=16, fontweight='bold')
-    plt.legend(fontsize=12, loc="lower right")
-    plt.grid(True, alpha=0.4)
-    plt.xlim(0, 1)
-    plt.ylim(0, 1)
-    
+    for (res, key, name, c, ls, m) in line_cfgs:
+        y_true, y_prob = res['y_true'], res[key]
+        fp, mp = calibration_curve(y_true, y_prob, n_bins=10)
+        plt.plot(mp, fp, label=name, color=c, linestyle=ls, marker=m, 
+                 linewidth=2.5, markersize=8, alpha=0.85)
+
+    plt.xlabel("Mean Predicted Probability")
+    plt.ylabel("Actual No-Purchase Rate")
+    plt.title("Calibration Curve")
+    plt.legend(loc="upper left", frameon=True, edgecolor='black', fancybox=False)
+    plt.grid(True, linestyle='--', alpha=0.4)
+    plt.ylim(0, 1.4)
     plt.tight_layout()
-    save_path_curve = save_dir / f"real_calibration_curve_{timestamp}.png"
-    plt.savefig(save_path_curve, dpi=300)
-    print(f"   Saved Calibration Curve to {save_path_curve}")
+    plt.savefig(save_dir / f"real_calibration_{timestamp}.png")
     plt.close()
+    print(f"   Saved Calibration Curve.")
+
 
 if __name__ == "__main__":
     res_lin = run_pipeline(utility_model_type='linear',return_preds=True)

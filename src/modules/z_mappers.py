@@ -14,19 +14,44 @@ class BaseZMapper(nn.Module):
 
     def forward(self, batch: TensorBatch) -> torch.Tensor:
         raise NotImplementedError
+
+class IndependentZMapper(BaseZMapper):
+    """
+    [NEW] Pure Context Mapping for Assumption 2 Compliance.
     
+    Logic:
+    z(X) = Linear(X_independent)
+    
+    It ignores 'batch.items' entirely. This ensures that z(X) is statistically 
+    independent of the inclusive value s(S) (which depends on items).
+    This is the "Clean" setting for theoretical verification.
+    """
+    def __init__(self, cfg: ExpConfig):
+        super().__init__(cfg)
+        
+        dim_ctx = getattr(cfg, 'dim_context', 0)
+        if dim_ctx <= 0:
+            raise ValueError("IndependentZMapper requires cfg.dim_context > 0")
+            
+        # Linear projection: dim_context -> dim_z
+        # Bias=False to keep it centered around 0 (since input is centered Gaussian)
+        self.proj = nn.Linear(dim_ctx, cfg.dim_z, bias=False)
+        
+        # Initialize with orthogonal matrix or random normal to preserve variance
+        nn.init.orthogonal_(self.proj.weight)
+        
+        # Freeze: acts as a fixed environment feature extractor
+        for param in self.proj.parameters():
+            param.requires_grad = False
+
+    def forward(self, batch: TensorBatch) -> torch.Tensor:
+        # Only use the independent context
+        return self.proj(batch.context)
+
 class StatsZMapper(BaseZMapper):
     """
     Baseline Strategy: Statistical Features + Linear Projection.
-    
-    Features calculated:
-    1. Mean: Average level of items.
-    2. Max: The best/highest feature (e.g., Max Quality).
-    3. Min: The lowest threshold (e.g., Min Price).
-    4. Std: Diversity/Dispersion of the assortment.
-    
-    Logic:
-    Concat[Context, Mean, Max, Min, Std] -> Project(dim_z)
+    ...
     """
     def __init__(self, cfg: ExpConfig):
         super().__init__(cfg)
@@ -149,6 +174,16 @@ class NeuralZMapper(BaseZMapper):
                 # Sum Pooling
                 h_sum = torch.sum(h, dim=1)
                 # Context fusion (if needed, simple concat logic can go here)
+                # For synthetic 'neural' mode, mixing context is okay as it represents 
+                # a complex feature extractor. But for strict Asm 2, use IndependentZMapper.
+                # If context is not empty, concat it?
+                # For now, keeping your original structure but note the dependency.
+                if context.numel() > 0 and context.shape[-1] > 0:
+                     # Simple logic: ignore context in phi, but maybe concat later?
+                     # Your original logic seemed to rely on `forward` passing context.
+                     # Let's assume rho takes just h_sum for now as per your snippet,
+                     # OR you can modify to concat context.
+                     pass 
                 return self.rho(h_sum)
                 
         return SimpleDeepSets(input_dim, output_dim)
