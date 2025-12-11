@@ -391,7 +391,8 @@ def plot_metric_scaling(
     title: str = "Scaling Analysis",
     y_top_margin: Optional[float] = None,
     legend_loc: str = 'upper right',
-    log_y: Optional[bool] = None
+    log_y: Optional[bool] = None,
+    log_x: Optional[bool] = None,
 ):
     print(f"\n>>> [Plot] {y_label} vs {x_label}...")
     
@@ -460,7 +461,7 @@ def plot_metric_scaling(
         'gamma_error': 'Parameter Estimation Error',
         'p0_error': 'Empirical P0 Error',
         'nll': 'Negative Log-Likelihood',
-        'regret': 'Revenue Regret (%)'
+        'regret': 'Sub-optimality (%)'
     }
 
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -519,12 +520,26 @@ def plot_metric_scaling(
 
     # --- 5. Axes & Ticks Logic (Preserved) ---
     # X-Axis Log Logic
-    x_min, x_max = df_agg[x_col].min(), df_agg[x_col].max()
-    if x_col == 'n_samples' or 'sigma' in x_col:
-        if x_min > 1e-9 and (x_max / x_min > 10):
-            ax.set_xscale('log')
-            ax.xaxis.set_major_formatter(ScalarFormatter()) 
-            ax.xaxis.set_minor_formatter(NullFormatter())
+    use_log_x=False
+    if log_x is not None: 
+        use_log_x = log_x
+    else:
+        x_min, x_max = df_agg[x_col].min(), df_agg[x_col].max()
+        if x_col == 'n_samples' or 'sigma' in x_col:
+            if x_min > 1e-9 and (x_max / x_min > 10):
+                use_log_x=True
+    if use_log_x:
+        ax.set_xscale('log')
+        custom_ticks = {x_min, x_max}
+        if x_col == 'n_samples' and x_min < 1000 < x_max:
+            custom_ticks.add(1000)
+            
+        if 'sigma' in x_col and x_min < 1.0 < x_max:
+            custom_ticks.add(1.0)
+            
+        ax.set_xticks(sorted(list(custom_ticks)))
+        ax.xaxis.set_major_formatter(ScalarFormatter()) 
+        ax.xaxis.set_minor_formatter(NullFormatter())
 
     # Y-Axis Log Logic
     use_log_y = False
@@ -550,7 +565,7 @@ def plot_metric_scaling(
     # --- 6. Layout & Legend ---
     ax.set_xlabel(LABEL_MAP.get(x_col, x_label), fontweight='bold')
     ax.set_ylabel(LABEL_MAP.get(y_label, y_label), fontweight='bold')
-    ax.set_title(title, pad=15, fontweight='bold')
+    # ax.set_title(title, pad=15, fontweight='bold')
 
     if y_top_margin:
         curr_bottom, curr_top = ax.get_ylim()
@@ -564,6 +579,7 @@ def plot_metric_scaling(
     clean_title = title.lower().replace(" ", "_").replace(":", "").replace("$", "").replace("\\", "")
     RUN_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = FIG_DIR / f"{clean_title}_{RUN_id}.png"
+    plt.tight_layout()
     plt.savefig(save_path, bbox_inches='tight', dpi=300)
     plt.close()
     print(f"   Saved to {save_path}")
@@ -611,11 +627,11 @@ if __name__ == "__main__":
             n_seeds=10,
             # sim_noise_type='cauchy'
         )
-        plot_metric_scaling(df1, 'n_samples', 'N', 'p0_error', 'combo_label', "Linear Convergence Rate",y_top_margin=1.4,legend_loc='upper left',log_y=False)
+        plot_metric_scaling(df1, 'n_samples', 'N', 'p0_error', 'combo_label', "Linear Convergence Rate",y_top_margin=1.4,legend_loc='upper left',log_y=False,log_x=False)
         # plot_metric_scaling(df1, 'n_samples', 'N', 'gamma_error', 'combo_label', "Linear Convergence Rate")
     def exp1_2():
         df2= run_experiment_grid(
-            base_cfg=replace(base_cfg,noise_distribution='uniform'),
+            base_cfg=replace(replace(base_cfg,noise_distribution='uniform'),outlier_prob =0.0),
             x_axis_name='n_samples',
             x_values=[200, 500, 1000, 2000,3000, 4000,5000,6000, 8000], 
             # compare_axis_name='algo_type',
@@ -629,10 +645,10 @@ if __name__ == "__main__":
             ],
             cross_product=False, # Explicit list
             default_y_type='monotone', # MRC should win here
-            n_seeds=10,
+            n_seeds=30,
             # sim_noise_type='cauchy'
         )
-        plot_metric_scaling(df2, 'n_samples', 'N', 'p0_error', 'combo_label', "MRC Convergence Rate",y_top_margin=1.4,log_y=False)
+        plot_metric_scaling(df2, 'n_samples', 'N', 'p0_error', 'combo_label', "MRC Convergence Rate",y_top_margin=1.4,log_y=False,log_x=False)
         # plot_metric_scaling(df2, 'n_samples', 'N', 'gamma_error', 'combo_label', "MRC Convergence Rate")
     # ------------------------------------------------------
     # Exp 2: Robustness to Utility Noise (tau)
@@ -641,9 +657,7 @@ if __name__ == "__main__":
         df1 = run_experiment_grid(
             base_cfg=base_cfg,
             x_axis_name='est_noise_sigma', 
-            x_values=[0.0, 0.1, 0.2, 0.3, 0.5, 0.8, 1.0,1.5,2.0],
-            # compare_axis_name='algo_type',
-            # compare_values=['linear', 'mrc'],
+            x_values=[0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0],
             compare_axis_name='algo_type', 
             compare_values=[
                 'linear',    
@@ -654,13 +668,13 @@ if __name__ == "__main__":
             n_seeds=10,
             # sim_noise_type='cauchy'
         )
-        plot_metric_scaling(df1, 'est_noise_sigma', r'$\tau$', 'p0_error', 'algo_type', "Linear Utility Noise Robustness",legend_loc='upper left',log_y=False)
+        plot_metric_scaling(df1, 'est_noise_sigma', r'$\tau$', 'p0_error', 'algo_type', "Linear Utility Noise Robustness",legend_loc='upper left',log_y=False,log_x=False)
         # plot_metric_scaling(df1, 'est_noise_sigma', r'$\tau$', 'gamma_error', 'algo_type', "Linear Utility Noise Robustness")
     def exp2_2():
         df2 = run_experiment_grid(
-            base_cfg=base_cfg,
+            base_cfg=replace(replace(base_cfg,sim_noise_sigma=2.0),noise_distribution='uniform'),
             x_axis_name='est_noise_sigma', 
-            x_values=[0.0, 0.1, 0.2, 0.3, 0.5, 0.8, 1.0,1.5,2.0],
+            x_values=[0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0],
             compare_axis_name='algo_type', 
             compare_values=[
                 'mrc',      
@@ -668,9 +682,9 @@ if __name__ == "__main__":
             ],
             cross_product=False, # Explicit list
             default_y_type='monotone',
-            n_seeds=10,
+            n_seeds=30,
         )
-        plot_metric_scaling(df2, 'est_noise_sigma', r'$\tau$', 'p0_error', 'algo_type', "MRC Utility Noise Robustness",legend_loc='upper left',log_y=False)
+        plot_metric_scaling(df2, 'est_noise_sigma', r'$\tau$', 'p0_error', 'algo_type', "MRC Utility Noise Robustness",legend_loc='upper left',log_y=False,log_x=False)
         # plot_metric_scaling(df2, 'est_noise_sigma', r'$\tau$', 'gamma_error', 'algo_type', "MRC Utility Noise Robustness")
     
     # ------------------------------------------------------
@@ -693,10 +707,10 @@ if __name__ == "__main__":
             default_y_type='monotone',
             n_seeds=10
         )
-        plot_metric_scaling(df1, 'n_samples', 'N', 'regret', 'combo_label', "Linear Revenue Regret",y_top_margin=1.4,legend_loc='upper left',log_y=False)
+        plot_metric_scaling(df1, 'n_samples', 'N', 'regret', 'combo_label', "Linear Revenue Regret",y_top_margin=1.4,legend_loc='upper left',log_y=False,log_x=False)
     def exp3_2():
         df2 = run_experiment_grid(
-            base_cfg=replace(base_cfg,est_noise_sigma=1.0),
+            base_cfg=replace(replace(base_cfg,noise_distribution='uniform'),outlier_prob =0.0),
             x_axis_name='n_samples', 
             x_values=[200, 500, 1000, 2000,3000, 4000,5000,6000, 8000], 
             compare_axis_name=['algo_type', 'y_type'], 
@@ -709,9 +723,9 @@ if __name__ == "__main__":
             cross_product=False, # Explicit list
             regret_need=True,
             default_y_type='monotone',
-            n_seeds=10
+            n_seeds=30
         )
-        plot_metric_scaling(df2, 'n_samples', 'N', 'regret', 'combo_label', "MRC Revenue Regret",y_top_margin=1.4,log_y=False)
+        plot_metric_scaling(df2, 'n_samples', 'N', 'regret', 'combo_label', "MRC Revenue Regret",y_top_margin=1.2,log_y=False,log_x=False)
 
     # ------------------------------------------------------
     # Exp 4: Multi-Simulator Robustness
@@ -750,7 +764,7 @@ if __name__ == "__main__":
         )
         plot_metric_scaling(
             df1, x_col='sim_noise_sigma', x_label=r'$\sigma_{sim}$', y_label='p0_error', hue_col='combo_label',
-            title="Linear Robustness to Simulator Noise",y_top_margin=1.2,legend_loc='upper left',log_y=False
+            title="Linear Robustness to Simulator Noise",y_top_margin=1.2,legend_loc='upper left',log_y=False,log_x=False
         )
         # plot_metric_scaling(
         #     df1, x_col='sim_noise_sigma', x_label=r'$\sigma_{sim}$', y_label='gamma_error', hue_col='combo_label',
@@ -774,7 +788,7 @@ if __name__ == "__main__":
         )
         plot_metric_scaling(
             df2, x_col='sim_noise_sigma', x_label=r'$\sigma_{sim}$', y_label='p0_error', hue_col='combo_label',
-            title="MRC Robustness to Simulator Noise",y_top_margin=1.5,log_y=False
+            title="MRC Robustness to Simulator Noise",y_top_margin=1.5,log_y=False,log_x=False
         )
         # plot_metric_scaling(
         #     df2, x_col='sim_noise_sigma', x_label=r'$\sigma_{sim}$', y_label='gamma_error', hue_col='combo_label',
@@ -803,7 +817,7 @@ if __name__ == "__main__":
         )
         plot_metric_scaling(
             df1, x_col='max_assortment_size', x_label=r'Max $|S|$', y_label='p0_error', hue_col='combo_label',
-            title="Linear Impact of Assortment Size",y_top_margin=1.5,legend_loc='upper left',log_y=False
+            title="Linear Impact of Assortment Size",y_top_margin=1.5,legend_loc='upper left',log_y=False,log_x=False
         )
         # plot_metric_scaling(
         #     df1, x_col='max_assortment_size', x_label=r'Max $|S|$', y_label='gamma_error', hue_col='combo_label',
@@ -827,7 +841,7 @@ if __name__ == "__main__":
         )
         plot_metric_scaling(
             df2, x_col='max_assortment_size', x_label=r'Max $|S|$', y_label='p0_error', hue_col='combo_label',
-            title="MRC Impact of Assortment Size",y_top_margin=1.2,log_y=False
+            title="MRC Impact of Assortment Size",y_top_margin=1.2,log_y=False,log_x=False
         )
         # plot_metric_scaling(
         #     df2, x_col='max_assortment_size', x_label=r'Max $|S|$', y_label='gamma_error', hue_col='combo_label',
@@ -854,7 +868,7 @@ if __name__ == "__main__":
             default_y_type='monotone',
             n_seeds=10
         )
-        plot_metric_scaling(df1, 'n_samples', 'N', 'p0_error', 'combo_label', "Linear Outlier Impact",y_top_margin=1.5,legend_loc='upper left',log_y=False)
+        plot_metric_scaling(df1, 'n_samples', 'N', 'p0_error', 'combo_label', "Linear Outlier Impact",y_top_margin=1.5,legend_loc='upper left',log_y=False,log_x=False)
         # plot_metric_scaling(df1, 'n_samples', 'N', 'gamma_error', 'combo_label', "Linear Outlier Impact")
     def exp7_2():
         df2=run_experiment_grid(
@@ -872,7 +886,7 @@ if __name__ == "__main__":
             default_y_type='monotone',
             n_seeds=10
         )
-        plot_metric_scaling(df2, 'n_samples', 'N', 'p0_error', 'combo_label', "Monotone Outlier Impact",y_top_margin=1.4,log_y=False)
+        plot_metric_scaling(df2, 'n_samples', 'N', 'p0_error', 'combo_label', "Monotone Outlier Impact",y_top_margin=1.4,log_y=False,log_x=False)
         # plot_metric_scaling(df2, 'n_samples', 'N', 'gamma_error', 'combo_label', "Monotone Outlier Impact")
         
     # ------------------------------------------------------
@@ -897,14 +911,14 @@ if __name__ == "__main__":
         
         plot_metric_scaling(
             df_dim, x_col='dim_z', x_label=r'Dimension $d$', y_label='gamma_error', hue_col='combo_label',
-            title="Impact of Feature Dimension",log_y=False
+            title="Impact of Feature Dimension",log_y=False,log_x=False
         )
       
     # ------------------------------------------------------
     # Run Selection
     # ------------------------------------------------------
     # Choose which experiments to run
-    experiments = [exp1_1,exp1_2,exp2_1,exp2_2,exp3_1,exp3_2,exp4,exp5_1,exp5_2,exp6_1,exp6_2,exp7_1,exp7_2]
+    experiments = [exp1_1,exp1_2,exp2_1,exp2_2,exp3_1,exp3_2,exp4,exp5_1,exp5_2,exp6_1,exp6_2]
 
     for func in experiments:
         print(f"\n{'='*40}")

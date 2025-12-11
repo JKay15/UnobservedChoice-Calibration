@@ -390,7 +390,7 @@ def plot_real_data_results(res_lin, res_nn):
         ax.set_xticks(x_pos)
         ax.set_xticklabels(methods, rotation=15)
         ax.set_ylabel(ylabel, fontweight='bold')
-        ax.set_title(f"{metric_key} Comparison", pad=15, fontweight='bold')
+        # ax.set_title(f"{metric_key} Comparison", pad=15, fontweight='bold')
         ax.grid(axis='y', linestyle='--', alpha=0.4)
         
         # Scaling
@@ -438,7 +438,7 @@ def plot_real_data_results(res_lin, res_nn):
 
     plt.xlabel("Mean Predicted Probability")
     plt.ylabel("Actual No-Purchase Rate")
-    plt.title("Calibration Curve")
+    # plt.title("Calibration Curve")
     plt.legend(loc="upper left", frameon=True, edgecolor='black', fancybox=False)
     plt.grid(True, linestyle='--', alpha=0.4)
     plt.ylim(0, 1.4)
