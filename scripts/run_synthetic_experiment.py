@@ -512,10 +512,10 @@ def plot_metric_scaling(
     )
 
     LABEL_MAP = {
-        "n_samples": r"$N$",
-        "est_noise_sigma": r"$\tau$",
-        "sim_noise_sigma": r"$\sigma_y$",
-        "dim_z": r"$d$",
+        "n_samples": "n",
+        "est_noise_sigma": x_label,
+        "sim_noise_sigma": r"$\sigma_{\epsilon}$",
+        "dim_z": "d",
         "max_assortment_size": r"$|\mathcal{S}|_{\max}$",
         "gamma_error": "Parameter Estimation Error",
         "p0_error": "Empirical P0 Error",
@@ -765,7 +765,7 @@ if __name__ == "__main__":
         plot_metric_scaling(
             df1,
             "est_noise_sigma",
-            r"$\tau$",
+            r"$\sqrt{\bar{\tau}}$",
             "p0_error",
             "algo_type",
             "Linear Utility Noise Robustness",
@@ -789,12 +789,12 @@ if __name__ == "__main__":
             ],
             cross_product=False,  # Explicit list
             default_y_type="monotone",
-            n_seeds=30,
+            n_seeds=50,
         )
         plot_metric_scaling(
             df2,
             "est_noise_sigma",
-            r"$\tau$",
+            r"$\tau_s$",
             "p0_error",
             "algo_type",
             "MRC Utility Noise Robustness",
@@ -1130,15 +1130,15 @@ if __name__ == "__main__":
     experiments = [
         exp1_1,
         exp1_2,
-        exp2_1,
-        exp2_2,
+        # exp2_1,
+        # exp2_2,
         exp3_1,
         exp3_2,
         exp4,
         exp5_1,
         exp5_2,
-        exp6_1,
-        exp6_2,
+        # exp6_1,
+        # exp6_2,
     ]
 
     for func in experiments:

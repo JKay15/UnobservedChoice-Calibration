@@ -353,16 +353,17 @@ def plot_real_data_results(res_lin, res_nn):
         {
             "font.family": "serif",
             "font.serif": ["Times New Roman"],
-            "font.size": 18,
-            "axes.labelsize": 20,
+            "font.size": 20,
+            "axes.labelsize": 22,
             "axes.titlesize": 22,
-            "xtick.labelsize": 16,
-            "ytick.labelsize": 16,
+            "xtick.labelsize": 18,
+            "ytick.labelsize": 18,
             "legend.fontsize": 16,
-            "lines.linewidth": 3.0,
-            "lines.markersize": 10,
+            "lines.linewidth": 2.5,
+            "lines.markersize": 9,
             "axes.grid": True,
-            "grid.alpha": 0.3,
+            "grid.linestyle": "--",
+            "grid.alpha": 0.4,
         }
     )
     save_dir = Path("results/figures")
@@ -501,6 +502,7 @@ def plot_real_data_results(res_lin, res_nn):
     line_cfgs = [
         (res_nn, "p_sim", "Simulator", c_sim, ":", ""),
         (res_lin, "p_lin", "Linear (Lin)", lighten(c_lin, 0.4), "--", "s"),
+        (res_nn, 'p_lin', 'Linear (NN)', c_lin, '--', '^'),
         (res_lin, "p_mrc", "MRC (Lin)", lighten(c_mrc, 0.4), "-", "^"),
         (res_nn, "p_mrc", "MRC (Neural)", c_mrc, "-", "D"),
     ]
