@@ -420,7 +420,6 @@ def run_experiment_grid(
 # 3. Universal Plotter (Kept mostly same)
 # ==========================================
 
-
 def plot_metric_scaling(
     df: pd.DataFrame,
     x_col: str,
@@ -518,7 +517,7 @@ def plot_metric_scaling(
         "dim_z": "d",
         "max_assortment_size": r"$|\mathcal{S}|_{\max}$",
         "gamma_error": "Parameter Estimation Error",
-        "p0_error": "Empirical P0 Error",
+        "p0_error": "Empirical p0 Error",
         "nll": "Negative Log-Likelihood",
         "regret": "Sub-optimality (%)",
     }
@@ -583,7 +582,6 @@ def plot_metric_scaling(
     use_log_x = False
     if log_x is not None:
         use_log_x = log_x
-    else:
         x_min, x_max = df_agg[x_col].min(), df_agg[x_col].max()
         if x_col == "n_samples" or "sigma" in x_col:
             if x_min > 1e-9 and (x_max / x_min > 10):
@@ -594,7 +592,7 @@ def plot_metric_scaling(
         if x_col == "n_samples" and x_min < 1000 < x_max:
             custom_ticks.add(1000)
 
-        if "sigma" in x_col and x_min < 1.0 < x_max:
+        if ("sigma" in x_col or 'sim_bias_b' in x_col) and x_min < 1.0 < x_max:
             custom_ticks.add(1.0)
 
         ax.set_xticks(sorted(list(custom_ticks)))
@@ -1122,23 +1120,88 @@ if __name__ == "__main__":
             log_y=False,
             log_x=False,
         )
+        
+    def exp9_1():
+        """
+        Tests the robustness against the magnitude of the bias (Slope b*).
+        Small b* = Weak signal (harder for Linear).
+        Large b* = Amplified signal.
+        """
+        df_bias = run_experiment_grid(
+            base_cfg=base_cfg, # Fixed moderate noise
+            x_axis_name="sim_bias_b",
+            # Covering: Weak Signal (0.1) -> Identity (1.0) -> Amplified (5.0)
+            x_values=[0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0],
+            compare_axis_name=["algo_type", "y_type"],
+            compare_values=[
+                ("linear", "linear"),      # Should handle scaling perfectly
+                ("linear", "monotone"),    # Should fail as b* changes curvature
+                ("linear_oracle", "linear"),
+                ("linear_oracle", "monotone"),       # Should be robust
+            ],
+            cross_product=False,
+            default_y_type="monotone",
+            n_seeds=10, # 20 seeds to ensure stable std deviation
+        )
+
+        plot_metric_scaling(
+            df_bias,
+            x_col="sim_bias_b",
+            x_label=r"$b^*$",
+            y_label="p0_error",
+            hue_col="combo_label",
+            title="Robustness to Bias Magnitude",
+            y_top_margin=1.4,
+            log_y=False,
+            log_x=True, # Log scale X-axis makes it easier to see 0.1 vs 5.0
+        )
+    def exp9_2():
+        df_bias = run_experiment_grid(
+            base_cfg=base_cfg, # Fixed moderate noise
+            x_axis_name="sim_bias_b",
+            # Covering: Weak Signal (0.1) -> Identity (1.0) -> Amplified (5.0)
+            x_values=[0.1, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0],
+            compare_axis_name=["algo_type", "y_type"],
+            compare_values=[
+                ("mrc", "linear"),      # Should handle scaling perfectly
+                ("mrc", "monotone"),    # Should fail as b* changes curvature
+                ("mrc_oracle", "linear"),
+                ("mrc_oracle", "monotone"),       # Should be robust
+            ],
+            cross_product=False,
+            default_y_type="monotone",
+            n_seeds=50, 
+        )
+
+        plot_metric_scaling(
+            df_bias,
+            x_col="sim_bias_b",
+            x_label=r"$b^*$",
+            y_label="p0_error",
+            hue_col="combo_label",
+            title="Robustness to Bias Magnitude",
+            y_top_margin=1.4,
+            log_y=False,
+            log_x=True, # Log scale X-axis makes it easier to see 0.1 vs 5.0
+        )
+    
 
     # ------------------------------------------------------
     # Run Selection
     # ------------------------------------------------------
     # Choose which experiments to run
     experiments = [
-        exp1_1,
-        exp1_2,
+        # exp1_1,
+        # exp1_2,
         # exp2_1,
         # exp2_2,
-        exp3_1,
-        exp3_2,
-        exp4,
-        exp5_1,
-        exp5_2,
-        # exp6_1,
-        # exp6_2,
+        # exp3_1,
+        # exp3_2,
+        # exp4,
+        # exp5_1,
+        # exp5_2,
+        # exp9_1,
+        exp9_2,
     ]
 
     for func in experiments:
