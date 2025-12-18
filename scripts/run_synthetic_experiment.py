@@ -1191,16 +1191,16 @@ if __name__ == "__main__":
     # ------------------------------------------------------
     # Choose which experiments to run
     experiments = [
-        # exp1_1,
-        # exp1_2,
-        # exp2_1,
-        # exp2_2,
-        # exp3_1,
-        # exp3_2,
-        # exp4,
-        # exp5_1,
-        # exp5_2,
-        # exp9_1,
+        exp1_1,
+        exp1_2,
+        exp2_1,
+        exp2_2,
+        exp3_1,
+        exp3_2,
+        exp4,
+        exp5_1,
+        exp5_2,
+        exp9_1,
         exp9_2,
     ]
 

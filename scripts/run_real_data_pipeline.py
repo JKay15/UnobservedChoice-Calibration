@@ -527,7 +527,7 @@ def plot_real_data_results(res_lin, res_nn):
     # plt.title("Calibration Curve")
     plt.legend(loc="upper left", frameon=True, edgecolor="black", fancybox=False)
     plt.grid(True, linestyle="--", alpha=0.4)
-    plt.ylim(0, 1.4)
+    plt.ylim(0, 1.50)
     plt.tight_layout()
     plt.savefig(save_dir / f"real_calibration_{timestamp}.png")
     plt.close()
