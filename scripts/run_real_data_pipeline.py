@@ -317,7 +317,7 @@ def run_pipeline(
     print("-" * 65)
     print(f" {'Method':<12} | {'NLL':<8} | {'ECE':<8} | {'AUC':<8}")
     print("-" * 65)
-    print(f" {'Simulator':<12} | {nll_sim:.5f}   | {ece_sim:.5f}   | {auc_sim:.5f}")
+    print(f" {'Predictor':<12} | {nll_sim:.5f}   | {ece_sim:.5f}   | {auc_sim:.5f}")
     print(f" {'Linear':<12} | {nll_lin:.5f}   | {ece_lin:.5f}   | {auc_lin:.5f}")
     print(f" {'MRC':<12}    | {nll_mrc:.5f}   | {ece_mrc:.5f}   | {auc_mrc:.5f}")
     print("-" * 40)
@@ -371,7 +371,7 @@ def plot_real_data_results(res_lin, res_nn):
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # 2. Prepare Data
-    methods = ["Simulator", "Linear\n(Lin)", "Linear\n(NN)", "MRC\n(Lin)", "MRC\n(NN)"]
+    methods = ["Predictor", "Linear\n(Lin)", "Linear\n(NN)", "MRC\n(Lin)", "MRC\n(NN)"]
 
     # 颜色 (与 Synthetic 保持一致的 Palette)
     # Sim=Gray, Linear=Blue, MRC=Red/Orange
@@ -500,7 +500,7 @@ def plot_real_data_results(res_lin, res_nn):
 
     # Config for lines
     line_cfgs = [
-        (res_nn, "p_sim", "Simulator", c_sim, ":", ""),
+        (res_nn, "p_sim", "Predictor", c_sim, ":", ""),
         (res_lin, "p_lin", "Linear (Lin)", lighten(c_lin, 0.4), "--", "s"),
         (res_nn, 'p_lin', 'Linear (NN)', c_lin, '--', '^'),
         (res_lin, "p_mrc", "MRC (Lin)", lighten(c_mrc, 0.4), "-", "^"),
